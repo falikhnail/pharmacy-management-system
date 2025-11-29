@@ -3,10 +3,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { storageService } from '@/lib/storage';
-import { Resep as ResepType, Pasien, Obat, ResepItem } from '@/types';
+import { Resep as ResepType, Pasien, Obat, ResepItem, Transaksi, StokItem } from '@/types';
 import { Plus, FileText, CheckCircle, XCircle, Printer } from 'lucide-react';
-import { formatDate, generateId, logAktivitas, updateStokObat } from '@/lib/utils-pharmacy';
-import { generateNomorResep } from '@/lib/barcode';
+import { formatDate, generateId, logAktivitas, updateStokObat, formatCurrency } from '@/lib/utils-pharmacy';
+import { generateNomorResep, generateNomorTransaksi } from '@/lib/barcode';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -53,6 +53,7 @@ export default function Resep() {
   });
 
   const currentUser = storageService.getCurrentUser();
+  const settings = storageService.getSettings();
 
   useEffect(() => {
     loadData();
@@ -65,7 +66,7 @@ export default function Resep() {
     const pasien = storageService.getPasien();
     setPasienList(pasien);
     
-    const obat = storageService.getObat().filter(o => !o.isArchived);
+    const obat = storageService.getObat();
     setObatList(obat);
   };
 
@@ -100,6 +101,8 @@ export default function Resep() {
       jumlah: currentItem.jumlah,
       dosis: currentItem.dosis,
       aturanPakai: currentItem.aturanPakai,
+      hargaSatuan: obat.hargaJual,
+      subtotal: obat.hargaJual * currentItem.jumlah,
     };
 
     setFormData({
@@ -129,6 +132,9 @@ export default function Resep() {
     const pasien = pasienList.find(p => p.id === formData.pasienId);
     if (!pasien) return;
 
+    // Calculate total
+    const total = formData.items.reduce((sum, item) => sum + item.subtotal, 0);
+
     const newResep: ResepType = {
       id: generateId('resep'),
       nomorResep: generateNomorResep(),
@@ -137,7 +143,8 @@ export default function Resep() {
       dokter: formData.dokter,
       tanggal: new Date().toISOString(),
       items: formData.items,
-      status: 'pending',
+      total: total,
+      status: 'Pending',
       catatan: formData.catatan,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -154,7 +161,7 @@ export default function Resep() {
   };
 
   const handleKonfirmasi = (resep: ResepType) => {
-    if (!confirm('Konfirmasi resep ini? Stok obat akan dikurangi.')) return;
+    if (!confirm('Konfirmasi resep ini? Stok obat akan dikurangi dan transaksi akan dicatat.')) return;
 
     // Kurangi stok untuk setiap item
     let success = true;
@@ -176,12 +183,13 @@ export default function Resep() {
     }
 
     if (success) {
+      // Update resep status to 'Selesai'
       const allResep = storageService.getResep();
       const updated = allResep.map(r =>
         r.id === resep.id
           ? {
               ...r,
-              status: 'selesai' as const,
+              status: 'Selesai' as const,
               apotekerId: currentUser.id,
               apotekerNama: currentUser.nama,
               updatedAt: new Date().toISOString(),
@@ -189,9 +197,48 @@ export default function Resep() {
           : r
       );
       storageService.saveResep(updated);
+
+      // Create transaction record from prescription
+      const transaksiItems: StokItem[] = resep.items.map(item => ({
+        obatId: item.obatId,
+        obatNama: item.obatNama,
+        jumlah: item.jumlah,
+        hargaSatuan: item.hargaSatuan,
+        subtotal: item.subtotal,
+      }));
+
+      const subtotal = resep.total;
+      const diskon = 0;
+      const diskonPersen = 0;
+      const pajak = (subtotal * (settings?.taxRate || 0)) / 100;
+      const total = subtotal + pajak;
+
+      const transaksi: Transaksi = {
+        id: generateId('transaksi'),
+        nomorTransaksi: generateNomorTransaksi(),
+        tanggal: new Date().toISOString(),
+        kasirId: currentUser.id,
+        kasirNama: currentUser.nama,
+        items: transaksiItems,
+        subtotal: subtotal,
+        diskon: diskon,
+        diskonPersen: diskonPersen,
+        pajak: pajak,
+        pajakPersen: settings?.taxRate || 0,
+        total: total,
+        metodePembayaran: 'Tunai',
+        jumlahBayar: total,
+        kembalian: 0,
+        catatan: `Transaksi dari Resep ${resep.nomorResep}`,
+        createdAt: new Date().toISOString(),
+      };
+
+      // Save transaction
+      const allTransaksi = storageService.getTransaksi();
+      storageService.saveTransaksi([...allTransaksi, transaksi]);
       
-      logAktivitas(currentUser.id, currentUser.nama, 'KONFIRMASI_RESEP', `Mengkonfirmasi resep: ${resep.nomorResep}`);
-      toast.success('Resep berhasil dikonfirmasi!');
+      logAktivitas(currentUser.id, currentUser.nama, 'KONFIRMASI_RESEP', `Mengkonfirmasi resep: ${resep.nomorResep} - Transaksi: ${transaksi.nomorTransaksi}`);
+      toast.success('Resep berhasil dikonfirmasi dan transaksi tercatat!');
       loadData();
     }
   };
@@ -202,7 +249,7 @@ export default function Resep() {
     const allResep = storageService.getResep();
     const updated = allResep.map(r =>
       r.id === resep.id
-        ? { ...r, status: 'dibatalkan' as const, updatedAt: new Date().toISOString() }
+        ? { ...r, status: 'Dibatalkan' as const, updatedAt: new Date().toISOString() }
         : r
     );
     storageService.saveResep(updated);
@@ -277,18 +324,22 @@ export default function Resep() {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'pending':
+      case 'Pending':
         return <Badge variant="secondary">Pending</Badge>;
-      case 'diproses':
+      case 'Diproses':
         return <Badge className="bg-blue-100 text-blue-800">Diproses</Badge>;
-      case 'selesai':
+      case 'Selesai':
         return <Badge className="bg-green-100 text-green-800">Selesai</Badge>;
-      case 'dibatalkan':
+      case 'Dibatalkan':
         return <Badge variant="destructive">Dibatalkan</Badge>;
       default:
         return <Badge>{status}</Badge>;
     }
   };
+
+  // Filter to show only pending prescriptions
+  const pendingResepList = resepList.filter(r => r.status === 'Pending');
+  const completedResepList = resepList.filter(r => r.status !== 'Pending');
 
   return (
     <div className="space-y-6">
@@ -303,9 +354,10 @@ export default function Resep() {
         </Button>
       </div>
 
+      {/* Pending Prescriptions */}
       <Card>
         <CardHeader>
-          <CardTitle>Daftar Resep</CardTitle>
+          <CardTitle>Resep Masuk (Pending) - {pendingResepList.length}</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
@@ -316,48 +368,92 @@ export default function Resep() {
                 <TableHead>Pasien</TableHead>
                 <TableHead>Dokter</TableHead>
                 <TableHead>Jumlah Item</TableHead>
+                <TableHead>Total</TableHead>
                 <TableHead>Status</TableHead>
-                <TableHead>Apoteker</TableHead>
                 <TableHead>Aksi</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {resepList.length === 0 ? (
+              {pendingResepList.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center text-gray-500">
-                    Belum ada resep
+                    Tidak ada resep pending
                   </TableCell>
                 </TableRow>
               ) : (
-                resepList.map((resep) => (
+                pendingResepList.map((resep) => (
                   <TableRow key={resep.id}>
                     <TableCell className="font-mono text-sm">{resep.nomorResep}</TableCell>
                     <TableCell>{formatDate(resep.tanggal)}</TableCell>
                     <TableCell>{resep.pasienNama}</TableCell>
                     <TableCell>{resep.dokter}</TableCell>
                     <TableCell className="text-center">{resep.items.length}</TableCell>
+                    <TableCell>{formatCurrency(resep.total)}</TableCell>
+                    <TableCell>{getStatusBadge(resep.status)}</TableCell>
+                    <TableCell>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => handleKonfirmasi(resep)}>
+                          <CheckCircle size={14} className="mr-1" />
+                          Konfirmasi
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => handleBatal(resep)}>
+                          <XCircle size={14} />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      {/* Completed Prescriptions */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Riwayat Resep (Selesai/Dibatalkan) - {completedResepList.length}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>No. Resep</TableHead>
+                <TableHead>Tanggal</TableHead>
+                <TableHead>Pasien</TableHead>
+                <TableHead>Dokter</TableHead>
+                <TableHead>Jumlah Item</TableHead>
+                <TableHead>Total</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Apoteker</TableHead>
+                <TableHead>Aksi</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {completedResepList.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center text-gray-500">
+                    Belum ada riwayat resep
+                  </TableCell>
+                </TableRow>
+              ) : (
+                completedResepList.map((resep) => (
+                  <TableRow key={resep.id}>
+                    <TableCell className="font-mono text-sm">{resep.nomorResep}</TableCell>
+                    <TableCell>{formatDate(resep.tanggal)}</TableCell>
+                    <TableCell>{resep.pasienNama}</TableCell>
+                    <TableCell>{resep.dokter}</TableCell>
+                    <TableCell className="text-center">{resep.items.length}</TableCell>
+                    <TableCell>{formatCurrency(resep.total)}</TableCell>
                     <TableCell>{getStatusBadge(resep.status)}</TableCell>
                     <TableCell>{resep.apotekerNama || '-'}</TableCell>
                     <TableCell>
-                      <div className="flex gap-2">
-                        {resep.status === 'pending' && (
-                          <>
-                            <Button size="sm" variant="outline" onClick={() => handleKonfirmasi(resep)}>
-                              <CheckCircle size={14} className="mr-1" />
-                              Konfirmasi
-                            </Button>
-                            <Button size="sm" variant="destructive" onClick={() => handleBatal(resep)}>
-                              <XCircle size={14} />
-                            </Button>
-                          </>
-                        )}
-                        {resep.status === 'selesai' && (
-                          <Button size="sm" variant="outline" onClick={() => handlePrintLabel(resep)}>
-                            <Printer size={14} className="mr-1" />
-                            Label
-                          </Button>
-                        )}
-                      </div>
+                      {resep.status === 'Selesai' && (
+                        <Button size="sm" variant="outline" onClick={() => handlePrintLabel(resep)}>
+                          <Printer size={14} className="mr-1" />
+                          Label
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))
