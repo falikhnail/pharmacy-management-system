@@ -217,6 +217,7 @@ export default function Resep() {
         id: generateId('transaksi'),
         nomorTransaksi: generateNomorTransaksi(),
         tanggal: new Date().toISOString(),
+        pasienId: resep.pasienId,
         kasirId: currentUser.id,
         kasirNama: currentUser.nama,
         items: transaksiItems,
