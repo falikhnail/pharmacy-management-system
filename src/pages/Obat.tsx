@@ -26,6 +26,24 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
+// Helper functions for currency formatting
+const formatCurrencyInput = (value: string): string => {
+  // Remove all non-digit characters
+  const numbers = value.replace(/\D/g, '');
+  
+  if (!numbers) return '';
+  
+  // Convert to number and format with thousand separators
+  const formatted = parseInt(numbers).toLocaleString('id-ID');
+  return formatted;
+};
+
+const parseCurrencyInput = (value: string): number => {
+  // Remove all non-digit characters and convert to number
+  const numbers = value.replace(/\D/g, '');
+  return numbers ? parseInt(numbers) : 0;
+};
+
 export default function Obat() {
   const [obatList, setObatList] = useState<ObatType[]>([]);
   const [filteredObat, setFilteredObat] = useState<ObatType[]>([]);
@@ -48,6 +66,10 @@ export default function Obat() {
     deskripsi: '',
   });
 
+  // Display values for formatted inputs
+  const [hargaBeliDisplay, setHargaBeliDisplay] = useState('');
+  const [hargaJualDisplay, setHargaJualDisplay] = useState('');
+
   useEffect(() => {
     loadObat();
   }, []);
@@ -55,6 +77,21 @@ export default function Obat() {
   useEffect(() => {
     filterObat();
   }, [searchTerm, obatList]);
+
+  // Update display values when formData changes
+  useEffect(() => {
+    if (formData.hargaBeli) {
+      setHargaBeliDisplay(formatCurrencyInput(formData.hargaBeli.toString()));
+    } else {
+      setHargaBeliDisplay('');
+    }
+    
+    if (formData.hargaJual) {
+      setHargaJualDisplay(formatCurrencyInput(formData.hargaJual.toString()));
+    } else {
+      setHargaJualDisplay('');
+    }
+  }, [formData.hargaBeli, formData.hargaJual]);
 
   const loadObat = () => {
     const data = storageService.getObat();
@@ -76,6 +113,8 @@ export default function Obat() {
     if (obat) {
       setEditingObat(obat);
       setFormData(obat);
+      setHargaBeliDisplay(formatCurrencyInput(obat.hargaBeli.toString()));
+      setHargaJualDisplay(formatCurrencyInput(obat.hargaJual.toString()));
     } else {
       setEditingObat(null);
       setFormData({
@@ -93,6 +132,8 @@ export default function Obat() {
         hargaJual: 0,
         deskripsi: '',
       });
+      setHargaBeliDisplay('');
+      setHargaJualDisplay('');
     }
     setShowDialog(true);
   };
@@ -163,6 +204,24 @@ export default function Obat() {
     logAktivitas(currentUser.id, currentUser.nama, 'ARCHIVE_OBAT', `Mengarsip obat: ${obat.nama}`);
     toast.success(obat.isArchived ? 'Obat berhasil diaktifkan!' : 'Obat berhasil diarsipkan!');
     loadObat();
+  };
+
+  const handleHargaBeliChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    const formatted = formatCurrencyInput(value);
+    const parsed = parseCurrencyInput(value);
+    
+    setHargaBeliDisplay(formatted);
+    setFormData({ ...formData, hargaBeli: parsed });
+  };
+
+  const handleHargaJualChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    const formatted = formatCurrencyInput(value);
+    const parsed = parseCurrencyInput(value);
+    
+    setHargaJualDisplay(formatted);
+    setFormData({ ...formData, hargaJual: parsed });
   };
 
   return (
@@ -378,20 +437,34 @@ export default function Obat() {
 
             <div>
               <Label>Harga Beli</Label>
-              <Input
-                type="number"
-                value={formData.hargaBeli}
-                onChange={(e) => setFormData({ ...formData, hargaBeli: parseInt(e.target.value) || 0 })}
-              />
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm">
+                  Rp
+                </span>
+                <Input
+                  type="text"
+                  value={hargaBeliDisplay}
+                  onChange={handleHargaBeliChange}
+                  placeholder="Contoh: 50000"
+                  className="pl-10"
+                />
+              </div>
             </div>
 
             <div>
               <Label>Harga Jual</Label>
-              <Input
-                type="number"
-                value={formData.hargaJual}
-                onChange={(e) => setFormData({ ...formData, hargaJual: parseInt(e.target.value) || 0 })}
-              />
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500 text-sm">
+                  Rp
+                </span>
+                <Input
+                  type="text"
+                  value={hargaJualDisplay}
+                  onChange={handleHargaJualChange}
+                  placeholder="Contoh: 75000"
+                  className="pl-10"
+                />
+              </div>
             </div>
 
             <div className="col-span-2">
