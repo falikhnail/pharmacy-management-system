@@ -174,10 +174,10 @@ export function exportToPDF(data: Record<string, string | number>[], title: stri
         fillColor: [245, 245, 245]
       },
       margin: { top: 28, left: 14, right: 14 },
-      didDrawPage: function(data: any) {
+      didDrawPage: function(hookData: { pageNumber: number }) {
         // Footer with page numbers
         const pageCount = doc.getNumberOfPages();
-        const pageNumber = doc.getCurrentPageInfo().pageNumber;
+        const pageNumber = hookData.pageNumber;
         doc.setFontSize(8);
         doc.text(
           `Halaman ${pageNumber} dari ${pageCount}`,

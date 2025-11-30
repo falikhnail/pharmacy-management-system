@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Calendar, Download, FileText, TrendingUp, Package, Users, DollarSign, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { exportToCSV, exportToExcel, exportToPDF } from '@/lib/export-utils';
+import { storageService } from '@/lib/storage';
 
 type ReportCategory = 'sales' | 'inventory' | 'patients' | 'financial';
 type ReportType = 
@@ -103,82 +104,336 @@ const categoryColors: Record<ReportCategory, string> = {
   financial: 'bg-orange-500'
 };
 
+// Helper function to format currency
+const formatCurrency = (amount: number): string => {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(amount);
+};
+
+// Helper function to check if date is in range
+const isDateInRange = (dateStr: string, startDate: string, endDate: string): boolean => {
+  const date = new Date(dateStr);
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999); // Include the end date fully
+  return date >= start && date <= end;
+};
+
 export default function Reports() {
   const [selectedCategory, setSelectedCategory] = useState<ReportCategory>('sales');
   const [selectedReport, setSelectedReport] = useState<ReportType | null>(null);
   const [dateRange, setDateRange] = useState({
-    startDate: new Date().toISOString().split('T')[0],
+    startDate: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0],
     endDate: new Date().toISOString().split('T')[0]
   });
 
   const filteredReports = reportConfigs.filter(report => report.category === selectedCategory);
 
   const generateReportData = (reportType: ReportType) => {
-    // Sample data generation based on report type
+    const { startDate, endDate } = dateRange;
+
     switch (reportType) {
-      case 'sales-summary':
-        return [
-          { tanggal: '2024-01-15', total_transaksi: 45, total_pendapatan: 'Rp 4.500.000', rata_rata: 'Rp 100.000' },
-          { tanggal: '2024-01-16', total_transaksi: 52, total_pendapatan: 'Rp 5.200.000', rata_rata: 'Rp 100.000' },
-          { tanggal: '2024-01-17', total_transaksi: 38, total_pendapatan: 'Rp 3.800.000', rata_rata: 'Rp 100.000' }
-        ];
+      case 'sales-summary': {
+        const penjualan = storageService.getPenjualan().filter(p => 
+          isDateInRange(p.tanggal, startDate, endDate)
+        );
+
+        // Group by date
+        const salesByDate = penjualan.reduce((acc, sale) => {
+          const date = sale.tanggal.split('T')[0];
+          if (!acc[date]) {
+            acc[date] = { count: 0, total: 0 };
+          }
+          acc[date].count += 1;
+          acc[date].total += sale.total;
+          return acc;
+        }, {} as Record<string, { count: number; total: number }>);
+
+        return Object.entries(salesByDate).map(([date, data]) => ({
+          tanggal: date,
+          total_transaksi: data.count,
+          total_pendapatan: formatCurrency(data.total),
+          rata_rata: formatCurrency(data.total / data.count)
+        })).sort((a, b) => a.tanggal.localeCompare(b.tanggal));
+      }
       
-      case 'best-selling':
-        return [
-          { nama_obat: 'Paracetamol 500mg', jumlah_terjual: 450, pendapatan: 'Rp 2.250.000', persentase: '15%' },
-          { nama_obat: 'Amoxicillin 500mg', jumlah_terjual: 380, pendapatan: 'Rp 3.800.000', persentase: '12%' },
-          { nama_obat: 'OBH Combi', jumlah_terjual: 320, pendapatan: 'Rp 1.920.000', persentase: '10%' }
-        ];
+      case 'best-selling': {
+        const penjualan = storageService.getPenjualan().filter(p => 
+          isDateInRange(p.tanggal, startDate, endDate)
+        );
+
+        // Aggregate sales by medicine
+        const salesByMedicine = penjualan.reduce((acc, sale) => {
+          sale.items.forEach(item => {
+            if (!acc[item.obatId]) {
+              acc[item.obatId] = {
+                nama: item.obatNama,
+                jumlah: 0,
+                pendapatan: 0
+              };
+            }
+            acc[item.obatId].jumlah += item.jumlah;
+            acc[item.obatId].pendapatan += item.subtotal;
+          });
+          return acc;
+        }, {} as Record<string, { nama: string; jumlah: number; pendapatan: number }>);
+
+        const totalRevenue = Object.values(salesByMedicine).reduce((sum, item) => sum + item.pendapatan, 0);
+
+        return Object.values(salesByMedicine)
+          .map(item => ({
+            nama_obat: item.nama,
+            jumlah_terjual: item.jumlah,
+            pendapatan: formatCurrency(item.pendapatan),
+            persentase: totalRevenue > 0 ? `${((item.pendapatan / totalRevenue) * 100).toFixed(1)}%` : '0%'
+          }))
+          .sort((a, b) => b.jumlah_terjual - a.jumlah_terjual)
+          .slice(0, 20);
+      }
       
-      case 'stock-levels':
-        return [
-          { nama_obat: 'Paracetamol 500mg', stok_tersedia: 450, minimum_stok: 100, status: 'Aman', lokasi: 'Rak A1' },
-          { nama_obat: 'Amoxicillin 500mg', stok_tersedia: 85, minimum_stok: 100, status: 'Rendah', lokasi: 'Rak A2' },
-          { nama_obat: 'Vitamin C 1000mg', stok_tersedia: 25, minimum_stok: 50, status: 'Kritis', lokasi: 'Rak B1' }
-        ];
+      case 'stock-levels': {
+        const obatList = storageService.getObat();
+        
+        return obatList.map(obat => {
+          let status = 'Aman';
+          if (obat.stokCurrent === 0) {
+            status = 'Habis';
+          } else if (obat.stokCurrent < obat.stokMinimum) {
+            status = obat.stokCurrent < obat.stokMinimum / 2 ? 'Kritis' : 'Rendah';
+          }
+
+          return {
+            nama_obat: obat.nama,
+            stok_tersedia: obat.stokCurrent,
+            minimum_stok: obat.stokMinimum,
+            status,
+            kategori: obat.kategori,
+            total_batch: obat.batches?.length || 0
+          };
+        }).sort((a, b) => a.stok_tersedia - b.stok_tersedia);
+      }
       
-      case 'stock-discrepancy':
-        return [
-          { nama_obat: 'Paracetamol 500mg', stok_sistem: 450, stok_fisik: 448, selisih: -2, nilai_selisih: 'Rp -10.000', status: 'Kurang' },
-          { nama_obat: 'Amoxicillin 500mg', stok_sistem: 380, stok_fisik: 382, selisih: 2, nilai_selisih: 'Rp 20.000', status: 'Lebih' },
-          { nama_obat: 'OBH Combi', stok_sistem: 320, stok_fisik: 320, selisih: 0, nilai_selisih: 'Rp 0', status: 'Sesuai' },
-          { nama_obat: 'Vitamin C 1000mg', stok_sistem: 150, stok_fisik: 145, selisih: -5, nilai_selisih: 'Rp -75.000', status: 'Kurang' }
-        ];
+      case 'stock-discrepancy': {
+        const stockOpname = storageService.getStockOpname().filter(so => 
+          isDateInRange(so.tanggal, startDate, endDate) && so.status === 'Selesai'
+        );
+
+        if (stockOpname.length === 0) {
+          return [];
+        }
+
+        // Get the latest stock opname
+        const latestOpname = stockOpname.sort((a, b) => 
+          new Date(b.tanggal).getTime() - new Date(a.tanggal).getTime()
+        )[0];
+
+        return latestOpname.items.map(item => {
+          const selisih = item.stokFisik - item.stokSistem;
+          const obat = storageService.getObat().find(o => o.id === item.obatId);
+          const nilaiSelisih = obat ? selisih * obat.hargaBeli : 0;
+
+          return {
+            nama_obat: item.obatNama,
+            stok_sistem: item.stokSistem,
+            stok_fisik: item.stokFisik,
+            selisih,
+            nilai_selisih: formatCurrency(nilaiSelisih),
+            status: selisih === 0 ? 'Sesuai' : selisih > 0 ? 'Lebih' : 'Kurang',
+            batch: item.nomorBatch || '-'
+          };
+        }).filter(item => item.selisih !== 0);
+      }
       
-      case 'expiring-soon':
-        return [
-          { nama_obat: 'Paracetamol 500mg', batch: 'B001', tanggal_kadaluarsa: '2024-03-15', stok: 50, status: 'Segera Kadaluarsa' },
-          { nama_obat: 'Amoxicillin 500mg', batch: 'B002', tanggal_kadaluarsa: '2024-02-28', stok: 30, status: 'Kritis' },
-          { nama_obat: 'Vitamin B Complex', batch: 'B003', tanggal_kadaluarsa: '2024-01-20', stok: 15, status: 'Kadaluarsa' }
-        ];
+      case 'expiring-soon': {
+        const batches = storageService.getObatBatches();
+        const expiryAlerts = storageService.getExpiryAlerts();
+        const today = new Date();
+
+        const expiringBatches = batches
+          .filter(batch => {
+            const expiryDate = new Date(batch.tanggalKadaluarsa);
+            const daysUntilExpiry = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            return daysUntilExpiry <= 90 && batch.jumlahStok > 0; // Show batches expiring within 90 days
+          })
+          .map(batch => {
+            const obat = storageService.getObat().find(o => o.id === batch.obatId);
+            const expiryDate = new Date(batch.tanggalKadaluarsa);
+            const daysUntilExpiry = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+            
+            let status = 'Normal';
+            if (daysUntilExpiry < 0) {
+              status = 'Kadaluarsa';
+            } else if (daysUntilExpiry <= 30) {
+              status = 'Kritis';
+            } else if (daysUntilExpiry <= 60) {
+              status = 'Segera Kadaluarsa';
+            } else {
+              status = 'Perhatian';
+            }
+
+            return {
+              nama_obat: obat?.nama || 'Unknown',
+              batch: batch.nomorBatch,
+              tanggal_kadaluarsa: batch.tanggalKadaluarsa,
+              stok: batch.jumlahStok,
+              hari_tersisa: daysUntilExpiry,
+              status,
+              supplier: batch.supplierNama
+            };
+          })
+          .sort((a, b) => a.hari_tersisa - b.hari_tersisa);
+
+        return expiringBatches;
+      }
       
-      case 'patient-visits':
-        return [
-          { tanggal: '2024-01-15', jumlah_pasien: 45, pasien_baru: 12, pasien_lama: 33, rata_rata_pembelian: 'Rp 85.000' },
-          { tanggal: '2024-01-16', jumlah_pasien: 52, pasien_baru: 15, pasien_lama: 37, rata_rata_pembelian: 'Rp 92.000' },
-          { tanggal: '2024-01-17', jumlah_pasien: 38, pasien_baru: 8, pasien_lama: 30, rata_rata_pembelian: 'Rp 78.000' }
-        ];
+      case 'patient-visits': {
+        const penjualan = storageService.getPenjualan().filter(p => 
+          isDateInRange(p.tanggal, startDate, endDate)
+        );
+        const pasien = storageService.getPasien();
+
+        // Group by date
+        const visitsByDate = penjualan.reduce((acc, sale) => {
+          const date = sale.tanggal.split('T')[0];
+          if (!acc[date]) {
+            acc[date] = { count: 0, total: 0 };
+          }
+          acc[date].count += 1;
+          acc[date].total += sale.total;
+          return acc;
+        }, {} as Record<string, { count: number; total: number }>);
+
+        // Calculate new vs returning patients (simplified)
+        const totalPatients = pasien.length;
+        const patientsCreatedInRange = pasien.filter(p => 
+          isDateInRange(p.createdAt, startDate, endDate)
+        ).length;
+
+        return Object.entries(visitsByDate).map(([date, data]) => {
+          const estimatedNew = Math.floor(data.count * 0.3); // Estimate 30% new patients
+          const estimatedReturning = data.count - estimatedNew;
+
+          return {
+            tanggal: date,
+            jumlah_pasien: data.count,
+            pasien_baru: estimatedNew,
+            pasien_lama: estimatedReturning,
+            rata_rata_pembelian: formatCurrency(data.total / data.count)
+          };
+        }).sort((a, b) => a.tanggal.localeCompare(b.tanggal));
+      }
       
-      case 'prescription-history':
-        return [
-          { nomor_resep: 'RX001', tanggal: '2024-01-15', nama_pasien: 'Ahmad Rizki', dokter: 'Dr. Siti', total_item: 3, total: 'Rp 150.000' },
-          { nomor_resep: 'RX002', tanggal: '2024-01-15', nama_pasien: 'Budi Santoso', dokter: 'Dr. Andi', total_item: 2, total: 'Rp 85.000' },
-          { nomor_resep: 'RX003', tanggal: '2024-01-16', nama_pasien: 'Citra Dewi', dokter: 'Dr. Siti', total_item: 4, total: 'Rp 220.000' }
-        ];
+      case 'prescription-history': {
+        const resep = storageService.getResep().filter(r => 
+          isDateInRange(r.tanggal, startDate, endDate)
+        );
+
+        return resep.map(r => ({
+          nomor_resep: r.nomorResep,
+          tanggal: r.tanggal.split('T')[0],
+          nama_pasien: r.pasienNama,
+          dokter: r.dokter,
+          total_item: r.items.length,
+          total: formatCurrency(r.total),
+          status: r.status,
+          apoteker: r.apotekerNama || '-'
+        })).sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+      }
       
-      case 'revenue-report':
-        return [
-          { periode: 'Minggu 1', penjualan_kotor: 'Rp 15.000.000', diskon: 'Rp 500.000', penjualan_bersih: 'Rp 14.500.000', hpp: 'Rp 10.000.000', laba_kotor: 'Rp 4.500.000' },
-          { periode: 'Minggu 2', penjualan_kotor: 'Rp 18.000.000', diskon: 'Rp 600.000', penjualan_bersih: 'Rp 17.400.000', hpp: 'Rp 12.000.000', laba_kotor: 'Rp 5.400.000' },
-          { periode: 'Minggu 3', penjualan_kotor: 'Rp 16.500.000', diskon: 'Rp 550.000', penjualan_bersih: 'Rp 15.950.000', hpp: 'Rp 11.000.000', laba_kotor: 'Rp 4.950.000' }
-        ];
+      case 'revenue-report': {
+        const penjualan = storageService.getPenjualan().filter(p => 
+          isDateInRange(p.tanggal, startDate, endDate)
+        );
+        const pembelian = storageService.getPembelian().filter(p => 
+          isDateInRange(p.tanggal, startDate, endDate)
+        );
+
+        // Group by week
+        const getWeekNumber = (date: Date) => {
+          const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
+          const pastDaysOfYear = (date.getTime() - firstDayOfYear.getTime()) / 86400000;
+          return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+        };
+
+        const revenueByWeek = penjualan.reduce((acc, sale) => {
+          const date = new Date(sale.tanggal);
+          const week = `Minggu ${getWeekNumber(date)}`;
+          
+          if (!acc[week]) {
+            acc[week] = {
+              penjualanKotor: 0,
+              diskon: 0,
+              penjualanBersih: 0,
+              hpp: 0
+            };
+          }
+          
+          acc[week].penjualanKotor += sale.subtotal;
+          acc[week].diskon += sale.diskon;
+          acc[week].penjualanBersih += sale.total;
+          
+          // Calculate COGS from items
+          sale.items.forEach(item => {
+            const obat = storageService.getObat().find(o => o.id === item.obatId);
+            if (obat) {
+              acc[week].hpp += obat.hargaBeli * item.jumlah;
+            }
+          });
+          
+          return acc;
+        }, {} as Record<string, { penjualanKotor: number; diskon: number; penjualanBersih: number; hpp: number }>);
+
+        return Object.entries(revenueByWeek).map(([week, data]) => ({
+          periode: week,
+          penjualan_kotor: formatCurrency(data.penjualanKotor),
+          diskon: formatCurrency(data.diskon),
+          penjualan_bersih: formatCurrency(data.penjualanBersih),
+          hpp: formatCurrency(data.hpp),
+          laba_kotor: formatCurrency(data.penjualanBersih - data.hpp)
+        }));
+      }
       
-      case 'profit-analysis':
-        return [
-          { nama_obat: 'Paracetamol 500mg', harga_beli: 'Rp 3.000', harga_jual: 'Rp 5.000', margin: 'Rp 2.000', persentase_margin: '40%', total_terjual: 450 },
-          { nama_obat: 'Amoxicillin 500mg', harga_beli: 'Rp 8.000', harga_jual: 'Rp 10.000', margin: 'Rp 2.000', persentase_margin: '25%', total_terjual: 380 },
-          { nama_obat: 'OBH Combi', harga_beli: 'Rp 4.500', harga_jual: 'Rp 6.000', margin: 'Rp 1.500', persentase_margin: '33%', total_terjual: 320 }
-        ];
+      case 'profit-analysis': {
+        const penjualan = storageService.getPenjualan().filter(p => 
+          isDateInRange(p.tanggal, startDate, endDate)
+        );
+        const obatList = storageService.getObat();
+
+        // Aggregate sales by medicine
+        const salesByMedicine = penjualan.reduce((acc, sale) => {
+          sale.items.forEach(item => {
+            if (!acc[item.obatId]) {
+              acc[item.obatId] = 0;
+            }
+            acc[item.obatId] += item.jumlah;
+          });
+          return acc;
+        }, {} as Record<string, number>);
+
+        return obatList
+          .filter(obat => salesByMedicine[obat.id] > 0)
+          .map(obat => {
+            const margin = obat.hargaJual - obat.hargaBeli;
+            const persentaseMargin = obat.hargaBeli > 0 
+              ? ((margin / obat.hargaBeli) * 100).toFixed(1) 
+              : '0';
+
+            return {
+              nama_obat: obat.nama,
+              harga_beli: formatCurrency(obat.hargaBeli),
+              harga_jual: formatCurrency(obat.hargaJual),
+              margin: formatCurrency(margin),
+              persentase_margin: `${persentaseMargin}%`,
+              total_terjual: salesByMedicine[obat.id],
+              total_profit: formatCurrency(margin * salesByMedicine[obat.id])
+            };
+          })
+          .sort((a, b) => b.total_terjual - a.total_terjual);
+      }
       
       default:
         return [];
@@ -195,6 +450,12 @@ export default function Reports() {
     if (!reportConfig) return;
 
     const data = generateReportData(selectedReport);
+    
+    if (data.length === 0) {
+      toast.error('Tidak ada data untuk diekspor');
+      return;
+    }
+
     const filename = `${reportConfig.name}_${dateRange.startDate}_${dateRange.endDate}`;
 
     try {
@@ -316,21 +577,24 @@ export default function Reports() {
               <div className="flex gap-2">
                 <button
                   onClick={() => handleExport('csv')}
-                  className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center gap-2"
+                  disabled={reportData.length === 0}
+                  className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Download className="h-4 w-4" />
                   CSV
                 </button>
                 <button
                   onClick={() => handleExport('excel')}
-                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2"
+                  disabled={reportData.length === 0}
+                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Download className="h-4 w-4" />
                   Excel
                 </button>
                 <button
                   onClick={() => handleExport('pdf')}
-                  className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2"
+                  disabled={reportData.length === 0}
+                  className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Download className="h-4 w-4" />
                   PDF
@@ -373,7 +637,7 @@ export default function Reports() {
                       <tr key={index} className="border-b hover:bg-secondary/50">
                         {Object.values(row).map((value, i) => (
                           <td key={i} className="p-2">
-                            {value as string}
+                            {value as string | number}
                           </td>
                         ))}
                       </tr>
@@ -382,7 +646,9 @@ export default function Reports() {
                 </table>
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
-                  Tidak ada data untuk ditampilkan
+                  <AlertTriangle className="h-12 w-12 mx-auto mb-2 opacity-50" />
+                  <p className="font-medium">Tidak ada data untuk ditampilkan</p>
+                  <p className="text-sm mt-1">Coba ubah rentang tanggal atau pastikan data sudah tersedia di sistem</p>
                 </div>
               )}
             </div>
