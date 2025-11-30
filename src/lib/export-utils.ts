@@ -1,189 +1,207 @@
 import jsPDF from 'jspdf';
-import 'jspdf-autotable';
-
-// Extend jsPDF type to include autoTable
-declare module 'jspdf' {
-  interface jsPDF {
-    autoTable: (options: {
-      head?: string[][];
-      body?: (string | number)[][];
-      startY?: number;
-      styles?: {
-        fontSize?: number;
-        cellPadding?: number;
-      };
-      headStyles?: {
-        fillColor?: number[];
-        textColor?: number;
-        fontStyle?: string;
-      };
-      alternateRowStyles?: {
-        fillColor?: number[];
-      };
-      margin?: { top?: number; left?: number; right?: number };
-      theme?: string;
-    }) => jsPDF;
-  }
-}
+import autoTable from 'jspdf-autotable';
 
 /**
  * Export data to CSV format
  */
 export function exportToCSV(data: Record<string, string | number>[], filename: string): void {
-  if (!data || data.length === 0) {
-    console.error('No data to export');
-    return;
+  try {
+    if (!data || data.length === 0) {
+      console.error('No data to export');
+      throw new Error('No data to export');
+    }
+
+    // Get headers from the first object
+    const headers = Object.keys(data[0]);
+    
+    // Create CSV content
+    const csvContent = [
+      headers.join(','), // Header row
+      ...data.map(row => 
+        headers.map(header => {
+          const value = row[header];
+          // Escape values that contain commas or quotes
+          if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+            return `"${value.replace(/"/g, '""')}"`;
+          }
+          return value;
+        }).join(',')
+      )
+    ].join('\n');
+
+    // Create blob and download
+    const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filename}.csv`);
+    link.style.visibility = 'hidden';
+    
+    document.body.appendChild(link);
+    link.click();
+    
+    // Cleanup
+    setTimeout(() => {
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }, 100);
+  } catch (error) {
+    console.error('Error exporting to CSV:', error);
+    throw error;
   }
-
-  // Get headers from the first object
-  const headers = Object.keys(data[0]);
-  
-  // Create CSV content
-  const csvContent = [
-    headers.join(','), // Header row
-    ...data.map(row => 
-      headers.map(header => {
-        const value = row[header];
-        // Escape values that contain commas or quotes
-        if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
-          return `"${value.replace(/"/g, '""')}"`;
-        }
-        return value;
-      }).join(',')
-    )
-  ].join('\n');
-
-  // Create blob and download
-  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-  
-  link.setAttribute('href', url);
-  link.setAttribute('download', `${filename}.csv`);
-  link.style.visibility = 'hidden';
-  
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
 }
 
 /**
- * Export data to Excel format (using CSV with .xlsx extension for simplicity)
- * For a more robust solution, consider using libraries like xlsx or exceljs
+ * Export data to Excel format (using TSV for better compatibility)
  */
 export function exportToExcel(data: Record<string, string | number>[], filename: string): void {
-  if (!data || data.length === 0) {
-    console.error('No data to export');
-    return;
+  try {
+    if (!data || data.length === 0) {
+      console.error('No data to export');
+      throw new Error('No data to export');
+    }
+
+    // Get headers from the first object
+    const headers = Object.keys(data[0]);
+    
+    // Create tab-separated content for better Excel compatibility
+    const tsvContent = [
+      headers.join('\t'), // Header row
+      ...data.map(row => 
+        headers.map(header => {
+          const value = row[header];
+          // Handle values with special characters
+          if (typeof value === 'string' && (value.includes('\t') || value.includes('"'))) {
+            return `"${value.replace(/"/g, '""')}"`;
+          }
+          return value;
+        }).join('\t')
+      )
+    ].join('\n');
+
+    // Create blob and download with proper Excel MIME type
+    const blob = new Blob(['\ufeff' + tsvContent], { 
+      type: 'application/vnd.ms-excel;charset=utf-8;' 
+    });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', `${filename}.xls`);
+    link.style.visibility = 'hidden';
+    
+    document.body.appendChild(link);
+    link.click();
+    
+    // Cleanup
+    setTimeout(() => {
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    }, 100);
+  } catch (error) {
+    console.error('Error exporting to Excel:', error);
+    throw error;
   }
-
-  // Get headers from the first object
-  const headers = Object.keys(data[0]);
-  
-  // Create tab-separated content for better Excel compatibility
-  const tsvContent = [
-    headers.join('\t'), // Header row
-    ...data.map(row => 
-      headers.map(header => {
-        const value = row[header];
-        // Handle values with special characters
-        if (typeof value === 'string' && (value.includes('\t') || value.includes('"'))) {
-          return `"${value.replace(/"/g, '""')}"`;
-        }
-        return value;
-      }).join('\t')
-    )
-  ].join('\n');
-
-  // Create blob and download
-  const blob = new Blob(['\ufeff' + tsvContent], { 
-    type: 'application/vnd.ms-excel;charset=utf-8;' 
-  });
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-  
-  link.setAttribute('href', url);
-  link.setAttribute('download', `${filename}.xls`);
-  link.style.visibility = 'hidden';
-  
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
 }
 
 /**
  * Export data to PDF format using jsPDF and autoTable
  */
 export function exportToPDF(data: Record<string, string | number>[], title: string, filename: string): void {
-  if (!data || data.length === 0) {
-    console.error('No data to export');
-    return;
-  }
+  try {
+    if (!data || data.length === 0) {
+      console.error('No data to export');
+      throw new Error('No data to export');
+    }
 
-  // Create new PDF document
-  const doc = new jsPDF({
-    orientation: 'landscape',
-    unit: 'mm',
-    format: 'a4'
-  });
+    console.log('Starting PDF export...', { dataLength: data.length, title, filename });
 
-  // Add title
-  doc.setFontSize(16);
-  doc.text(title, 14, 15);
+    // Create new PDF document
+    const doc = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: 'a4'
+    });
 
-  // Add date
-  doc.setFontSize(10);
-  const currentDate = new Date().toLocaleDateString('id-ID', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  });
-  doc.text(`Tanggal: ${currentDate}`, 14, 22);
+    // Add title
+    doc.setFontSize(16);
+    doc.text(title, 14, 15);
 
-  // Get headers and format them
-  const headers = Object.keys(data[0]).map(key => 
-    key.replace(/_/g, ' ').toUpperCase()
-  );
+    // Add date
+    doc.setFontSize(10);
+    const currentDate = new Date().toLocaleDateString('id-ID', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    doc.text(`Tanggal: ${currentDate}`, 14, 22);
 
-  // Get table data
-  const tableData = data.map(row => Object.values(row).map(val => String(val)));
-
-  // Add table using autoTable
-  doc.autoTable({
-    head: [headers],
-    body: tableData,
-    startY: 28,
-    theme: 'grid',
-    styles: {
-      fontSize: 8,
-      cellPadding: 2,
-    },
-    headStyles: {
-      fillColor: [41, 128, 185],
-      textColor: 255,
-      fontStyle: 'bold',
-    },
-    alternateRowStyles: {
-      fillColor: [245, 245, 245],
-    },
-    margin: { top: 28, left: 14, right: 14 },
-  });
-
-  // Add footer with page numbers
-  const pageCount = (doc as { internal: { getNumberOfPages: () => number } }).internal.getNumberOfPages();
-  for (let i = 1; i <= pageCount; i++) {
-    doc.setPage(i);
-    doc.setFontSize(8);
-    doc.text(
-      `Halaman ${i} dari ${pageCount}`,
-      doc.internal.pageSize.getWidth() / 2,
-      doc.internal.pageSize.getHeight() - 10,
-      { align: 'center' }
+    // Get headers and format them
+    const headers = Object.keys(data[0]).map(key => 
+      key.replace(/_/g, ' ').toUpperCase()
     );
-  }
 
-  // Save the PDF
-  doc.save(`${filename}.pdf`);
+    // Get table data and ensure all values are strings
+    const tableData = data.map(row => 
+      Object.values(row).map(val => {
+        if (val === null || val === undefined) return '';
+        return String(val);
+      })
+    );
+
+    console.log('Table data prepared:', { headers, rowCount: tableData.length });
+
+    // Add table using autoTable
+    autoTable(doc, {
+      head: [headers],
+      body: tableData,
+      startY: 28,
+      theme: 'grid',
+      styles: {
+        fontSize: 8,
+        cellPadding: 2,
+        overflow: 'linebreak',
+        cellWidth: 'auto'
+      },
+      headStyles: {
+        fillColor: [41, 128, 185],
+        textColor: 255,
+        fontStyle: 'bold',
+        halign: 'center'
+      },
+      alternateRowStyles: {
+        fillColor: [245, 245, 245]
+      },
+      margin: { top: 28, left: 14, right: 14 },
+      didDrawPage: function(data: any) {
+        // Footer with page numbers
+        const pageCount = doc.getNumberOfPages();
+        const pageNumber = doc.getCurrentPageInfo().pageNumber;
+        doc.setFontSize(8);
+        doc.text(
+          `Halaman ${pageNumber} dari ${pageCount}`,
+          doc.internal.pageSize.getWidth() / 2,
+          doc.internal.pageSize.getHeight() - 10,
+          { align: 'center' }
+        );
+      }
+    });
+
+    console.log('PDF generated successfully, saving...');
+
+    // Save the PDF
+    doc.save(`${filename}.pdf`);
+    
+    console.log('PDF saved successfully');
+  } catch (error) {
+    console.error('Error exporting to PDF:', error);
+    console.error('Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    throw error;
+  }
 }
 
 /**
